@@ -1,0 +1,171 @@
+#!/bin/bash
+
+##
+# VARIABLES
+##
+
+TIME=$(date +"%Y-%m-%d_%H-%M")
+RESULT_PATH=/root/benchmarks/rados-results/
+
+##
+# FUNCTIONS
+##
+
+usage()
+{
+    echo ""
+    echo "Usage: $0: [OPTIONS]"
+    echo "  -c                  : Set number of concurrent I/O operations. Accepts several values separated by a comma."
+    echo "  -b                  : Test block size, _MUST_ be set in BYTES. Accepts several values separated by a comma."
+    echo "  -r                  : Set the pool replica count. Accepts several values separated by a comma."
+    echo "  -p                  : Number of placement groups for the rados bench pool (help: (total_osds * 128)/(rep_size)"
+    echo "  -t                  : Set the runtime in seconds"
+    echo "  -s                  : List of the ceph servers. Accepts several values separated by a comma. (mandatory to flush the page between each run"
+    echo "  -h                  : Show this help & exit"
+    echo ""
+    echo "Example:"
+    echo "  $0 -c 16,32 -b 4096,4194304 -p 2048 -r 2,3 -t 600 -s server1,server2"
+    echo ""
+    exit 1
+}
+
+
+while getopts 'c:b:p:t:r:s:h' OPTION
+do
+    case ${OPTION} in
+    c)
+        CONCURRENCY="${OPTARG}"
+        ;;
+    b)
+        IO_SIZE="${OPTARG}"
+        ;;
+    p)
+        PG_NB="${OPTARG}"
+        ;;
+    t)
+        RUNTIME="${OPTARG}"
+        ;;
+    r)
+        REPLICA_COUNT="${OPTARG}"
+        ;;
+    h)
+        usage
+        ;;
+    ?)
+        usage
+        ;;
+    esac
+done
+
+##
+# TESTS
+##
+
+if [ ! -d "${RESULT_PATH}" ]; then
+    mkdir -p ${RESULT_PATH}
+fi
+
+log()
+{
+    echo $1 | tee -a ${RESULT_PATH}/output.log
+}
+
+drop_caches()
+{
+    for h in $(echo ${HOSTS} | tr "," " ")
+    do
+        log "===> Dropping caches of the OSDs disks (`date +%H:%M:%S`)"
+        ssh ${h} 'echo 3 > /proc/sys/vm/drop_caches'
+    done
+}
+
+
+ceph_health()
+{
+    while [ "$(sudo ceph health)" != "HEALTH_OK" ] ; do
+        sleep 1
+        echo -n "."
+    done
+
+}
+
+job_duration()
+{
+    DURATION=$(echo ${IO_SIZE} | tr "," " ")
+    DURATION="${DURATION} $(echo ${CONCURRENCY} | tr "," " ")"
+    DURATION="${DURATION} $(echo ${REPLICA_COUNT} | tr "," " ")"
+    DURATION=$(echo ${DURATION} | wc -w)
+    if [ $(echo ${IO_SIZE} | tr "," " " | wc -w) -eq 1 ]; then
+        DURATION=$((${DURATION} - 1))
+    fi
+    if [ $(echo ${CONCURRENCY} | tr "," " " | wc -w) -eq 1 ]; then
+        DURATION=$((${DURATION} - 1))
+    fi
+    if [ $(echo ${REPLICA_COUNT} | tr "," " " | wc -w) -eq 1 ]; then
+        DURATION=$((${DURATION} - 1))
+    fi
+    RUNTIME=$((${RUNTIME} * 2))
+    DURATION=$((${DURATION} * ${RUNTIME}))
+    echo ""
+    echo "THIS JOB IS ABOUT TO LAST FOR ${DURATION} SECONDS, PLEASE BE PATIENT"
+    echo ""
+}
+
+launch_rados()
+{
+    job_duration
+    for i in $(echo ${IO_SIZE} | tr "," " ")
+    do
+        for k in $(echo ${CONCURRENCY} | tr "," " ")
+        do
+            for l in $(echo ${REPLICA_COUNT} | tr "," " ")
+            do
+                mkdir -p ${RESULT_PATH}/${TIME}/${i}_${k}_${l}
+                CURRENT_TIME=$(date +%H:%M:%S)
+                LOGS=${RESULT_PATH}/${TIME}/${i}_${k}_${l}
+                drop_caches
+
+                log "===> CREATE POOL: ${CURRENT_TIME}_performance (`date +%H:%M:%S`)"
+                sudo ceph osd pool create ${CURRENT_TIME}_performance ${PG_NB} ${PG_NB}
+
+                if [ ${l} -gt 2 ]; then
+                    ceph osd pool set ${CURRENT_TIME}_performance size ${l}
+                fi
+
+                echo -n "Waiting for Ceph to be ready..."
+                ceph_health
+
+                log "===> RADOS BENCH WRITE TEST WITH ${i} BYTES BLOCK SIZE, CONCURRENCY ${k} AND REPLICA COUNT ${l}: START (`date +%H:%M:%S`)"
+                sudo rados -p ${CURRENT_TIME}_performance bench ${RUNTIME} write -b ${i} -t ${k} --no-cleanup > ${LOGS}/result_rados_write_${i}_${k}_${l}.csv
+                log "===> RADOS BENCH WRITE TEST WITH ${i} BYTES BLOCK SIZE: END (`date +%H:%M:%S`)"
+
+                drop_caches
+
+                log "===> RADOS BENCH READ TEST WITH ${i} BYTES BLOCK SIZE AND CONCURRENCY ${k}: START (`date +%H:%M:%S`)"
+                sudo rados -p ${CURRENT_TIME}_performance bench ${RUNTIME} seq -t ${k} > ${LOGS}/result_rados_seq_${i}_${k}_${l}.csv bench
+                log "===> RADOS BENCH READ TEST WITH ${i} BYTES BLOCK SIZE: END (`date +%H:%M:%S`)"
+
+                sudo ceph osd pool delete ${CURRENT_TIME}_performance ${CURRENT_TIME}_performance --yes-i-really-really-mean-it
+                log "===> DELETE POOL: ${CURRENT_TIME}_performance (`date +%H:%M:%S`)"
+                sleep 5
+            done
+        done
+    done
+}
+
+launch_rbd()
+{
+    echo "NOT IMPLEMENTED"
+    exit 1
+}
+
+##
+# MAIN
+##
+
+# start the tests
+log "Start: `date +%H:%M:%S`"
+
+launch_rados
+
+exit 0
