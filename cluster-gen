@@ -1,0 +1,155 @@
+#!/bin/bash
+
+##
+# VARIABLES
+##
+
+#set -x
+CEPH_DEPLOY=$(which ceph-deploy)
+
+##
+# FUNCTIONS
+##
+
+show_help() {
+    PROG=$(basename $0)
+    echo ""
+    echo "Usage of ${PROG}:"
+    cat << EOF
+
+-h              : Show this help & exit
+-w mon              : Wipe an existing cluster
+-m mon              : Monitor server to use
+
+-d disk1[,disk2,disk3,..]   : Deploy a cluster with the
+                    Separated each disk with a comma
+                    Disk name must be "sdxx", "/dev/ MUST NOT be used
+-s server[,server1, ...]  : Servers to use to deploy the OSDs
+                    Separated each hostname with a comma
+                    Each hostname must be resolvable either from DNS either from your local hosts file
+
+Example:
+
+${PROG} -d sdb,sdc,sdd,sde -s host1,host2,host3 -m proxym2
+
+EOF
+}
+
+parse_cmdline() {
+while getopts "hws:d:m:" opt; do
+  case $opt in
+    h)
+    show_help
+    exit 0
+    ;;
+    w)
+    echo "NOT IMPLEMENTED"
+    exit 1
+    ;;
+    s)
+    HOSTS=${OPTARG}
+    ;;
+    d)
+    DISKS=${OPTARG}
+    ;;
+    m)
+    MONITOR=${OPTARG}
+    ;;
+   \?)
+      echo "Invalid option: -${OPTARG}" >&2
+    ;;
+  esac
+done
+
+if [ -z "${DISKS}" ]; then
+    echo "Missing DISKS"
+    echo "Exiting!"
+    exit 1
+fi
+
+if [ -z "${HOSTS}" ]; then
+    echo "Missing HOSTS!"
+    echo "Exiting!"
+    exit 1
+fi
+
+}
+
+wipe_mon() {
+    ssh ${MONITOR} "killall ceph-mon"
+    ssh ${MONITOR} "rm -rf /var/lib/ceph/*/*"
+    ssh ${MONITOR} "rm -f /etc/ceph/*"
+}
+
+wipe_osds() {
+    ${CEPH_DEPLOY} forgetkeys
+    for i in $(echo ${HOSTS} | tr "," " ")
+    do
+        ${CEPH_DEPLOY} install ${i}
+        ssh ${i} "killall ceph-osd"
+        sleep 1
+        ssh ${i} "rm -rf /var/lib/ceph/*/*"
+        ssh ${i} "rm -f /etc/ceph/*"
+        sleep 1
+        for k in $(echo ${DISKS} | tr "," " ")
+        do
+            ssh ${i} "umount /dev/${k}2"
+            sleep 1
+            ssh ${i} "parted --script /dev/${k} rm 1"
+            ssh ${i} "parted --script /dev/${k} rm 2"
+            ssh ${i} "parted -a optimal --script /dev/${k} mktable gpt"
+            ssh ${i} "parted -a optimal --script /dev/${k} mkpart primary ext2 0% 2%"
+            ssh ${i} "parted -a optimal --script /dev/${k} mkpart primary ext2 2% 100%"
+            ssh ${i} "sync"
+            ssh ${i} "echo 3 > /proc/sys/vm/drop_caches"
+        done
+    sleep 1
+    done
+}
+
+new_cluster() {
+    ${CEPH_DEPLOY} install ${MONITOR}
+    ${CEPH_DEPLOY} new ${MONITOR}
+    ${CEPH_DEPLOY} --overwrite-conf mon create ${MONITOR}
+    sleep 1
+    ${CEPH_DEPLOY} gatherkeys ${MONITOR}
+}
+
+create_osds() {
+for i in $(echo ${HOSTS} | tr "," " ")
+    do
+    for j in $(echo ${DISKS} | tr "," " ")
+    do
+        ${CEPH_DEPLOY} -v --overwrite-conf osd prepare ${i}:/dev/${j}2:/dev/${j}1
+        sleep 1
+        ${CEPH_DEPLOY} -v --overwrite-conf osd activate ${i}:/dev/${j}2:/dev/${j}1
+    done
+done
+}
+
+# non-generic piece of code
+osd_network()
+{
+    for i in $(echo ${HOSTS} | tr "," " ")
+    do
+        ip=$(ssh ${i} ip -o -4 a | grep eth7 | awk '{print $4}' | cut -f 1 -d /)
+        ssh ${i} "echo "public addr = ${ip}" | tee -a /etc/ceph/ceph.conf"
+        ssh ${i} "echo "cluster addr = ${ip}" | tee -a /etc/ceph/ceph.conf"
+        ssh ${i} "service ceph restart"
+    done
+}
+
+start_all() {
+    wipe_osds
+    wipe_mon
+    new_cluster
+    create_osds
+    osd_network
+}
+
+##
+# MAIN
+##
+
+parse_cmdline $@
+start_all
