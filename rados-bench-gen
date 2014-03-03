@@ -51,9 +51,6 @@ do
     h)
         usage
         ;;
-    ?)
-        usage
-        ;;
     esac
 done
 
