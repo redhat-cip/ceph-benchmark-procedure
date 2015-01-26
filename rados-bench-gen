@@ -6,6 +6,7 @@
 
 TIME=$(date +"%Y-%m-%d_%H-%M")
 RESULT_PATH=$HOME/rados-results/
+SSH_OPTIONS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
 ##
 # FUNCTIONS
