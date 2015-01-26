@@ -50,10 +50,12 @@ do
     r)
         REPLICA_COUNT="${OPTARG}"
         ;;
+    s)
+        HOSTS="${OPTARG}"
+        ;;
     z)
         THREAD="${OPTARG}"
         ;;
-
     h)
         usage
         ;;
