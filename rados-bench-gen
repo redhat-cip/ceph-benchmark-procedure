@@ -80,7 +80,7 @@ drop_caches()
     for h in $(echo ${HOSTS} | tr "," " ")
     do
         log "===> Dropping caches of the OSDs disks (`date +%H:%M:%S`)"
-        ssh ${h} 'echo 3 > /proc/sys/vm/drop_caches'
+        ssh ${SSH_OPTIONS} ${h} 'echo 3 > /proc/sys/vm/drop_caches'
     done
 }
 
